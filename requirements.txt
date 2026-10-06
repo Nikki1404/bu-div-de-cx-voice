@@ -1,0 +1,12 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+websockets==13.0
+transformers==4.46.3
+huggingface-hub==0.31.4
+safetensors==0.5.3
+speechbrain==1.0.3
+loralib==0.1.2
+HyperPyYAML==1.2.2
+numpy==1.26.4
+scipy==1.13.1
