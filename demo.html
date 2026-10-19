@@ -32,7 +32,10 @@
   .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .steps{display:flex;gap:6px;margin-bottom:20px;flex-wrap:wrap}
   .step{flex:1;min-width:110px;padding:8px 10px;border:1px solid var(--rule);
-        background:var(--panel);font-size:12px;color:var(--muted);text-align:center}
+      background:var(--panel);font-family:inherit;font-size:12px;font-weight:400;
+      line-height:1.4;color:var(--muted);text-align:center}
+    .steps .step:hover:not(:disabled){background:#e3eff2;border-color:var(--accent)}
+    .step:focus-visible{outline:2px solid var(--accent2);outline-offset:2px}
   .step.active{border-color:var(--accent);color:var(--accent);font-weight:600;
         box-shadow:inset 0 -2px 0 var(--accent)}
   .step.done{color:var(--ok);border-color:var(--ok)}
@@ -82,11 +85,11 @@
   </header>
 
   <div class="steps">
-    <div class="step active" id="s1">1 · Customer</div>
-    <div class="step" id="s2">2 · Enroll voice</div>
-    <div class="step" id="s3">3 · Biometric test</div>
-    <div class="step" id="s4">4 · Select audio</div>
-    <div class="step" id="s5">5 · Profile results</div>
+    <button type="button" class="step active" id="s1">1 · Customer</button>
+    <button type="button" class="step" id="s2">2 · Enroll voice</button>
+    <button type="button" class="step" id="s3" disabled>3 · Biometric test</button>
+    <button type="button" class="step" id="s4" disabled>4 · Select audio</button>
+    <button type="button" class="step" id="s5" disabled>5 · Profile results</button>
   </div>
 
   <div id="error" class="err hidden"></div>
@@ -138,18 +141,20 @@
 
   <!-- STEP 4 -->
   <div class="panel hidden" id="panel-result">
-    <h2>Biometric test result</h2>
-    <div id="verdict"></div>
-    <div id="tables"></div>
+    <h2 id="result-title">Biometric test result</h2>
+    <div id="biometric-details">
+      <div id="verdict"></div>
+      <div id="tables"></div>
+    </div>
     <section id="profiling-section" class="hidden">
-      <h2>Profile audio</h2>
-      <p class="hint">Choose any recording from this session. Profiling runs separately for each selected clip.</p>
-      <label class="audio-choice"><input type="checkbox" id="profile-all"><span>Select all available recordings</span></label>
-      <div id="audio-list" class="audio-list"></div>
-      <div class="row"><button id="btn-profile" disabled>Profile selected</button></div>
-      <div id="profile-summary" aria-live="polite"></div>
+      <div id="profile-picker">
+        <h2>Profile audio</h2>
+        <div id="audio-list" class="audio-list"></div>
+        <div class="row"><button id="btn-profile" disabled>Profile selected</button></div>
+      </div>
+      <div id="profile-summary" class="hidden" aria-live="polite"></div>
     </section>
-    <details>
+    <details id="biometric-raw">
       <summary>Raw API responses</summary>
       <pre id="raw"></pre>
     </details>
@@ -165,13 +170,15 @@ const WORDS = ("river tiger copper harbour lantern meadow cobalt thunder velvet 
              + "orchid granite silver compass maple ember willow falcon canyon "
              + "amber quartz juniper beacon cedar ripple").split(" ");
 
-let state = { cid:null, mode:null, clipsDone:0, enrolled:[], counts:{}, pendingEnrollment:[], audioClips:[], nextClipId:1, profilingBusy:false };
+let state = { cid:null, mode:null, clipsDone:0, enrolled:[], counts:{}, pendingEnrollment:[], audioClips:[], nextClipId:1, profilingBusy:false, audioBusy:false, step:1 };
 let media = { stream:null, rec:null, chunks:[], t0:0, timer:null, ac:null, raf:null };
 
 const $ = id => document.getElementById(id);
 const show = (id,on=true) => $(id).classList.toggle("hidden", !on);
-function setStep(n){ [1,2,3,4,5].forEach(i=>{
-  const el=$("s"+i); el.classList.toggle("active", i===n); el.classList.toggle("done", i<n); }); }
+function setStep(n){ state.step = n; [1,2,3,4,5].forEach(i=>{
+  const el=$("s"+i); el.classList.toggle("active", i===n); el.classList.toggle("done", i<n);
+  if(i===n) el.setAttribute("aria-current", "step"); else el.removeAttribute("aria-current");
+  }); updateProfileControls(); }
 function fail(msg){ $("error").textContent = msg; show("error", true); }
 function clearFail(){ show("error", false); }
 function phrase(){ const p=[]; while(p.length<4) {
@@ -195,17 +202,24 @@ $("btn-call").onclick = async () => {
   if(!cid){ fail("Enter a customer identifier first."); return; }
   $("cid").value = cid;
   state.cid = cid;
+  state.mode = null;
+  state.audioBusy = true;
   state.pendingEnrollment = [];
   state.clipsDone = 0;
+  state.audioClips = state.audioClips.filter(clip => clip.kind !== "enrollment" || clip.enrolled);
   show("panel-call", false); show("panel-lookup", true); setStep(2);
   $("btn-continue").disabled = true;
   $("lookup-result").innerHTML = `<p class="hint">Looking up <b>${cid}</b>…</p>`;
-  if(!await loadSpeakers()){
+  const reachable = await loadSpeakers();
+  state.audioBusy = false;
+  updateProfileControls();
+  if(!reachable){
     fail("Could not check the speaker registry. Try again when the API is available.");
     return;
   }
   const n = state.counts[cid] || 0;
   state.mode = n > 0 ? "verify" : "enrol";
+  updateProfileControls();
   $("lookup-result").innerHTML = n > 0
     ? `<div class="verdict ok"><h3>Customer found — voiceprint on file</h3>
        <p><b>${cid}</b> has a voiceprint built from ${n} clips. This call will
@@ -223,6 +237,8 @@ $("btn-hangup").onclick = () => {
 
 $("btn-continue").onclick = () => {
   const cid = state.cid;
+  clearFail();
+  show("panel-call", false); show("panel-result", false);
   show("panel-lookup", false); show("panel-record", true); setStep(state.mode === "enrol" ? 2 : 3);
   if(state.mode === "enrol"){
     $("rec-title").textContent = `Enrolment — ${cid} (clip ${state.clipsDone+1} of ${ENROL_CLIPS})`;
@@ -233,6 +249,8 @@ $("btn-continue").onclick = () => {
       + "and against every enrolled speaker (1:N).";
   }
   $("phrase").textContent = phrase();
+  $("timer").textContent = "0.0 s";
+  $("rec-hint").textContent = `Need at least ${MIN_SEC.toFixed(1)} s of speech`;
 };
 
 $("btn-reset").onclick = async () => {
@@ -247,17 +265,49 @@ $("btn-reset").onclick = async () => {
   renderProfileSummary();
   await loadSpeakers();
 };
-$("btn-again").onclick = () => {
-  show("panel-result", false); show("panel-call", true); setStep(1);
-  $("cid").value = ""; loadSpeakers();
-};
+$("btn-again").onclick = () => navigateStep(1);
+
+function navigateStep(step){
+  if(state.audioBusy || state.profilingBusy || $("s"+step).disabled) return;
+  clearFail();
+  if(step === 3 || (step === 2 && state.mode === "enrol")){
+    $("btn-continue").onclick();
+    return;
+  }
+  ["panel-call", "panel-lookup", "panel-record", "panel-result"].forEach(id => show(id, false));
+  if(step <= 2){
+    show("panel-call");
+    $("cid").value = "";
+    setStep(1);
+    loadSpeakers();
+    return;
+  }
+  show("panel-result");
+  show("biometric-details", step === 4);
+  show("biometric-raw", step === 4);
+  show("profiling-section");
+  show("profile-picker", step === 4);
+  show("profile-summary", step === 5);
+  $("result-title").textContent = step === 5 ? "Profile results" : "Biometric test result";
+  renderAudioClips();
+  renderProfileSummary();
+  setStep(step);
+}
+
+[1,2,3,4,5].forEach(step => { $("s"+step).onclick = () => navigateStep(step); });
 
 $("btn-rec").onclick = async () => {
   clearFail();
+  state.audioBusy = true;
+  $("btn-rec").disabled = true;
+  updateProfileControls();
   try{
     media.stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,
       echoCancellation:true, noiseSuppression:true}});
   }catch(e){
+    state.audioBusy = false;
+    $("btn-rec").disabled = false;
+    updateProfileControls();
     fail("Microphone unavailable: " + e.name + ". The page must be served over HTTPS "
        + "(Cloud Shell Web Preview is), and the browser must be granted mic permission.");
     return;
@@ -313,7 +363,9 @@ async function submit(){
       fail(`${e.message}. This ID was registered in another session. Use your own unique ID, or verify the existing speaker.`);
     }
   }
+  state.audioBusy = false;
   $("btn-rec").disabled = false;
+  updateProfileControls();
 }
 
 function form(blob, extra={}, filename="recording.webm"){
@@ -333,26 +385,29 @@ async function post(path, fd){
   return d;
 }
 
-function addAudioClip(blob, label, biometricSummary){
+function addAudioClip(blob, label, biometricSummary, kind="enrollment"){
   state.audioClips.push({
-    id: state.nextClipId++, blob, label, biometricSummary, speakerId: state.cid,
-    selected: false, profileStatus: "", profileResult: null,
+    id: state.nextClipId++, blob, label, biometricSummary, speakerId: state.cid, kind,
+    enrolled: false, selected: kind === "verification", profileStatus: "", profileResult: null,
+    profileSummary: null,
   });
   renderAudioClips();
 }
 
 function renderAudioClips(){
   const list = $("audio-list");
-  const profiles = getSpeakerProfiles();
   list.replaceChildren();
-  for(const clip of state.audioClips){
+  for(const clip of state.audioClips.filter(clip => clip.kind === "verification" && clip.speakerId === state.cid)){
     const label = document.createElement("label");
     label.className = "audio-choice";
     const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
+    checkbox.type = "radio";
+    checkbox.name = "verification-recording";
     checkbox.checked = clip.selected;
+    checkbox.disabled = state.profilingBusy || state.audioBusy;
     checkbox.onchange = () => {
-      clip.selected = checkbox.checked;
+      for(const recording of state.audioClips) recording.selected = recording.id === clip.id;
+      renderProfileSummary();
       updateProfileControls();
     };
     const text = document.createElement("span");
@@ -363,21 +418,19 @@ function renderAudioClips(){
     label.append(checkbox, text);
     list.append(label);
 
-    const profile = profiles.get(clip.speakerId);
     if(clip.profileStatus){
       const result = document.createElement("div");
       result.className = "profile-result";
       result.textContent = clip.profileStatus;
       list.append(result);
     }
-    if(profile){
+    if(clip.profileSummary){
       const speakerResult = document.createElement("div");
       speakerResult.className = "profile-result";
-      speakerResult.textContent = `Speaker age: ${profile.age.toFixed(1)} (${ageBucket(profile.age)}), based on ${profile.results.length} profiled clip${profile.results.length === 1 ? "" : "s"}.`;
+      speakerResult.textContent = `Age bucket: ${ageBucket(clip.profileSummary.age)}; Gender: ${clip.profileSummary.gender}`;
       list.append(speakerResult);
     }
   }
-  $("profile-all").checked = state.audioClips.length > 0 && state.audioClips.every(clip => clip.selected);
   updateProfileControls();
 }
 
@@ -402,71 +455,70 @@ function ageBucket(age){
   return "100+";
 }
 
-function getSpeakerProfiles(){
-  const groups = new Map();
-  for(const clip of state.audioClips){
-    if(!clip.profileResult) continue;
-    if(!groups.has(clip.speakerId)) groups.set(clip.speakerId, []);
-    groups.get(clip.speakerId).push(clip.profileResult);
-  }
-
-  const profiles = new Map();
-  for(const [speakerId, results] of groups){
-    const age = median(results.map(result => result.estimated_age));
-    const female = results.reduce((total, result) => total + result.gender_probabilities.female, 0) / results.length;
-    const male = results.reduce((total, result) => total + result.gender_probabilities.male, 0) / results.length;
-    profiles.set(speakerId, {
-      age,
-      results,
-      gender: female > male ? "Female" : "Male",
-      genderConfidence: Math.max(female, male),
-    });
-  }
-  return profiles;
-}
-
 function renderProfileSummary(){
   const summary = $("profile-summary");
   summary.replaceChildren();
-  for(const [speakerId, profile] of getSpeakerProfiles()){
+  for(const clip of state.audioClips.filter(clip => clip.speakerId === state.cid && clip.selected && clip.profileSummary)){
     const row = document.createElement("p");
     row.className = "verdict ok";
-    row.textContent = `${speakerId}: estimated age ${profile.age.toFixed(1)} (${ageBucket(profile.age)}), ${profile.gender} (${Math.round(profile.genderConfidence * 100)}% confidence), based on ${profile.results.length} clip${profile.results.length === 1 ? "" : "s"}.`;
+    row.textContent = `${clip.speakerId}: estimated age ${clip.profileSummary.age.toFixed(1)}; Gender: ${clip.profileSummary.gender}`;
     summary.append(row);
   }
 }
 
 function updateProfileControls(){
-  $("btn-profile").disabled = !state.audioClips.some(clip => clip.selected)
-    || state.profilingBusy;
+  const busy = state.profilingBusy || state.audioBusy;
+  const recordings = state.audioClips.filter(clip => clip.kind === "verification" && clip.speakerId === state.cid);
+  $("audio-list").querySelectorAll("input").forEach(input => { input.disabled = busy; });
+  $("btn-call").disabled = busy;
+  $("btn-reset").disabled = busy;
+  $("btn-hangup").disabled = busy;
+  $("btn-continue").disabled = busy || !state.mode;
+  $("btn-profile").disabled = busy || !recordings.some(clip => clip.selected);
+  $("btn-again").disabled = busy;
+  $("s1").disabled = busy;
+  $("s2").disabled = busy;
+  $("s3").disabled = busy || !state.cid || state.mode !== "verify";
+  $("s4").disabled = busy || !recordings.length;
+  $("s5").disabled = busy || !recordings.some(clip => clip.selected && clip.profileSummary);
 }
 
-$("profile-all").onchange = () => {
-  for(const clip of state.audioClips) clip.selected = $("profile-all").checked;
-  renderAudioClips();
-};
-
 $("btn-profile").onclick = async () => {
-  const selected = state.audioClips.filter(clip => clip.selected);
+  if(state.profilingBusy || state.audioBusy) return;
+  const selected = state.audioClips.find(clip => clip.kind === "verification" && clip.speakerId === state.cid && clip.selected);
+  if(!selected) return;
+  const inputs = state.audioClips.filter(clip => clip.speakerId === selected.speakerId
+    && ((clip.kind === "enrollment" && clip.enrolled) || clip.id === selected.id));
   state.profilingBusy = true;
-  $("btn-again").disabled = true;
-  $("btn-profile").disabled = true;
-  for(const clip of selected){
-    clip.profileStatus = "Profiling…";
-    clip.profileResult = null;
-    renderAudioClips();
-    try{
-      clip.profileResult = await post("/age-gender/predict", form(clip.blob, {}, `recording-${clip.id}.webm`));
-      clip.profileStatus = "Profiled";
-    }catch(error){
-      clip.profileStatus = `Profiling failed: ${error.message}`;
+  selected.profileStatus = "Profiling…";
+  selected.profileSummary = null;
+  renderAudioClips();
+  try{
+    for(const clip of inputs){
+      if(!clip.profileResult){
+        const result = await post("/age-gender/predict", form(clip.blob, {}, `recording-${clip.id}.webm`));
+        if(!Number.isFinite(result.estimated_age)) throw new Error("No estimated age returned");
+        if(!Number.isFinite(result.gender_probabilities?.female)
+          || !Number.isFinite(result.gender_probabilities?.male)) throw new Error("No gender probabilities returned");
+        clip.profileResult = result;
+      }
     }
+    const female = inputs.reduce((total, clip) => total + clip.profileResult.gender_probabilities.female, 0) / inputs.length;
+    const male = inputs.reduce((total, clip) => total + clip.profileResult.gender_probabilities.male, 0) / inputs.length;
+    selected.profileSummary = {
+      age: median(inputs.map(clip => clip.profileResult.estimated_age)),
+      gender: female > male ? "Female" : "Male",
+      clipIds: inputs.map(clip => clip.id),
+    };
+    selected.profileStatus = "Profiled";
+  }catch(error){
+    selected.profileStatus = `Profiling failed: ${error.message}`;
+  }finally{
+    state.profilingBusy = false;
     renderAudioClips();
+    renderProfileSummary();
+    if(selected.profileSummary) navigateStep(5);
   }
-  state.profilingBusy = false;
-  $("btn-again").disabled = false;
-  renderProfileSummary();
-  updateProfileControls();
 };
 
 async function doEnrol(blob){
@@ -489,6 +541,9 @@ async function doEnrol(blob){
   });
   const d = await post(`/biometrics/speakers/${encodeURIComponent(state.cid)}/enroll`, enrollment);
   addAudioClip(blob, `Enrollment clip ${clipNumber}`, `Enrollment audio for ${state.cid}`);
+  for(const clip of state.audioClips.filter(clip => clip.kind === "enrollment" && clip.speakerId === state.cid).slice(-ENROL_CLIPS)){
+    clip.enrolled = true;
+  }
   state.clipsDone = d.n_utterances;
   state.pendingEnrollment = [];
     state.mode = "verify";
@@ -504,7 +559,10 @@ async function doEnrol(blob){
 async function doVerify(blob){
   const v = await post("/biometrics/verify", form(blob, {speaker_id: state.cid}));
   const i = await post("/biometrics/identify", form(blob));
-  addAudioClip(blob, `Verification recording ${state.cid}`, `1:1 ${v.decision}; 1:N ${i.decision}`);
+  for(const clip of state.audioClips) clip.selected = false;
+  const previousTests = state.audioClips.filter(clip => clip.kind === "verification" && clip.speakerId === state.cid).length;
+  const label = `Verification recording ${state.cid}` + (previousTests ? ` (test ${previousTests+1})` : "");
+  addAudioClip(blob, label, `1:1 ${v.decision}; 1:N ${i.decision}`, "verification");
 
   const accepted = v.decision === "accept";
   $("verdict").innerHTML = `
@@ -537,10 +595,13 @@ async function doVerify(blob){
     </table>`;
   $("raw").textContent = "POST /verify\n" + JSON.stringify(v, null, 2)
                        + "\n\nPOST /identify\n" + JSON.stringify(i, null, 2);
-  $("profiling-section").classList.remove("hidden");
+  $("result-title").textContent = "Biometric test result";
+  show("biometric-details"); show("biometric-raw");
+  show("profiling-section"); show("profile-picker"); show("profile-summary", false);
   show("panel-record", false); show("panel-result", true); setStep(4);
 }
 
+setStep(1);
 loadSpeakers();
 </script>
 </body>
