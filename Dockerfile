@@ -1,9 +1,10 @@
 FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu24.04
 
-ENV http_proxy="http://163.116.128.80:8080"
-ENV https_proxy="http://163.116.128.80:8080"
-ENV HTTP_PROXY="http://163.116.128.80:8080"
-ENV HTTPS_PROXY="http://163.116.128.80:8080"
+ARG http_proxy
+ARG https_proxy
+
+ENV http_proxy=${http_proxy}
+ENV https_proxy=${https_proxy}
 
 ARG VD_REPO=https://github.com/localai-org/voice-detect.cpp.git
 ARG VD_REF=1db1759572c90faef6f3a78c36b5941a096a9f89
@@ -15,7 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    HF_HOME=/data/huggingface \
+    HF_HOME=/opt/huggingface \
     MODEL_ID=tiantiaf/wavlm-large-age-sex \
     DEVICE=cuda \
     VOX_PROFILE_PATH=/opt/vox-profile-release \
@@ -63,6 +64,30 @@ COPY requirements.txt .
 RUN uv pip install -r requirements.txt
 
 RUN python - <<'PY'
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="tiantiaf/wavlm-large-age-sex",
+    cache_dir="/opt/huggingface/hub",
+)
+snapshot_download(
+    repo_id="microsoft/wavlm-large",
+    cache_dir="/opt/huggingface/hub",
+)
+PY
+
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+RUN python - <<'PY'
+from transformers import Wav2Vec2FeatureExtractor, WavLMConfig
+
+Wav2Vec2FeatureExtractor.from_pretrained("microsoft/wavlm-large")
+WavLMConfig.from_pretrained("microsoft/wavlm-large")
+print("WavLM backbone files are cached for offline startup")
+PY
+
+RUN python - <<'PY'
 from pathlib import Path
 
 path = Path("/opt/venv/lib/python3.12/site-packages/speechbrain/utils/torch_audio_backend.py")
@@ -93,8 +118,9 @@ RUN useradd --system --uid 10001 --home /app voiceiq \
 USER voiceiq
 
 VOLUME ["/data"]
-EXPOSE 8000
+ENV PORT=8001
+EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8001') + '/health', timeout=4)"
 
-CMD ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["sh", "-c", "exec python -m uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8001} --workers 1"]

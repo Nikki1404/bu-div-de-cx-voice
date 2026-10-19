@@ -1,7 +1,9 @@
 import logging
+import threading
 import time
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
 
 from api.schemas import AgeGenderPrediction, HealthResponse
 from models.age_gender_model import DEVICE, MODEL_ID, age_gender_model
@@ -12,11 +14,21 @@ from profiling.gender.service import format_gender_result
 
 logger = logging.getLogger("age-gender")
 router = APIRouter(prefix="/age-gender", tags=["Age & Gender"])
+_prediction_lock = threading.Lock()
 
 
 def make_prediction(waveform):
-    model_result = age_gender_model.predict(waveform)
+    with _prediction_lock:
+        model_result = age_gender_model.predict(waveform)
     return {**format_age_result(model_result), **format_gender_result(model_result)}
+
+
+def predict_audio(data):
+    waveform = load_audio(data)
+    return {
+        "audio_duration_seconds": round(waveform.shape[0] / SAMPLE_RATE, 2),
+        **make_prediction(waveform),
+    }
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -28,12 +40,10 @@ async def health():
 async def predict(file: UploadFile = File(...)):
     try:
         start = time.perf_counter()
-        waveform = load_audio(await file.read())
-        result = make_prediction(waveform)
+        result = await run_in_threadpool(predict_audio, await file.read())
         return {
             "status": "success",
             "filename": file.filename,
-            "audio_duration_seconds": round(waveform.shape[0] / SAMPLE_RATE, 2),
             **result,
             "processing_time_seconds": round(time.perf_counter() - start, 3),
         }
@@ -52,11 +62,10 @@ async def websocket_predict(websocket: WebSocket):
         while True:
             start = time.perf_counter()
             try:
-                waveform = load_audio(await websocket.receive_bytes())
-                result = make_prediction(waveform)
+                data = await websocket.receive_bytes()
+                result = await run_in_threadpool(predict_audio, data)
                 await websocket.send_json({
                     "status": "success",
-                    "audio_duration_seconds": round(waveform.shape[0] / SAMPLE_RATE, 2),
                     **result,
                     "processing_time_seconds": round(time.perf_counter() - start, 3),
                 })

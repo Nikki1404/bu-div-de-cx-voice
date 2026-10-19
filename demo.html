@@ -147,7 +147,7 @@
       <label class="audio-choice"><input type="checkbox" id="profile-all"><span>Select all available recordings</span></label>
       <div id="audio-list" class="audio-list"></div>
       <div class="row"><button id="btn-profile" disabled>Profile selected</button></div>
-      <div id="profile-results" aria-live="polite"></div>
+      <div id="profile-summary" aria-live="polite"></div>
     </section>
     <details>
       <summary>Raw API responses</summary>
@@ -165,7 +165,7 @@ const WORDS = ("river tiger copper harbour lantern meadow cobalt thunder velvet 
              + "orchid granite silver compass maple ember willow falcon canyon "
              + "amber quartz juniper beacon cedar ripple").split(" ");
 
-let state = { cid:null, mode:null, clipsDone:0, enrolled:[], counts:{}, audioClips:[], nextClipId:1, profilingBusy:false };
+let state = { cid:null, mode:null, clipsDone:0, enrolled:[], counts:{}, pendingEnrollment:[], audioClips:[], nextClipId:1, profilingBusy:false };
 let media = { stream:null, rec:null, chunks:[], t0:0, timer:null, ac:null, raf:null };
 
 const $ = id => document.getElementById(id);
@@ -185,32 +185,32 @@ async function loadSpeakers(){
     $("enrolled-list").textContent = state.enrolled.length
       ? `Enrolled: ${d.speakers.map(s=>`${s.speaker_id} (${s.n_utterances} clip${s.n_utterances>1?"s":""})`).join(", ")}`
       : "No speakers enrolled yet — the first call will run enrolment.";
-  }catch(e){ $("enrolled-list").textContent = "Could not reach the API: " + e.message; }
+      return true;
+      }catch(e){ $("enrolled-list").textContent = "Could not reach the API: " + e.message; return false; }
 }
 
 $("btn-call").onclick = async () => {
   clearFail();
-  const cid = $("cid").value.trim();
+  const cid = $("cid").value.trim().toLowerCase();
   if(!cid){ fail("Enter a customer identifier first."); return; }
+  $("cid").value = cid;
   state.cid = cid;
+  state.pendingEnrollment = [];
+  state.clipsDone = 0;
   show("panel-call", false); show("panel-lookup", true); setStep(2);
   $("btn-continue").disabled = true;
   $("lookup-result").innerHTML = `<p class="hint">Looking up <b>${cid}</b>…</p>`;
-  await loadSpeakers();
-  // A voiceprint built from fewer than ENROL_CLIPS clips is unfinished: resume
-  // enrolment rather than authenticate against it (same rule as POST /call).
+  if(!await loadSpeakers()){
+    fail("Could not check the speaker registry. Try again when the API is available.");
+    return;
+  }
   const n = state.counts[cid] || 0;
-  state.clipsDone = n;
-  state.mode = n >= ENROL_CLIPS ? "verify" : "enrol";
-  $("lookup-result").innerHTML = n >= ENROL_CLIPS
+  state.mode = n > 0 ? "verify" : "enrol";
+  $("lookup-result").innerHTML = n > 0
     ? `<div class="verdict ok"><h3>Customer found — voiceprint on file</h3>
        <p><b>${cid}</b> has a voiceprint built from ${n} clips. This call will
        <b>authenticate</b> the caller: 1:1 against ${cid}, then 1:N against all
        ${state.enrolled.length} enrolled speaker(s).</p></div>`
-    : n > 0
-    ? `<div class="verdict warn"><h3>Enrolment unfinished</h3>
-       <p><b>${cid}</b> has only ${n} of ${ENROL_CLIPS} clips. This call will
-       <b>resume enrolment</b> and record ${ENROL_CLIPS-n} more.</p></div>`
     : `<div class="verdict warn"><h3>New customer — no voiceprint on file</h3>
        <p>Nothing is stored for <b>${cid}</b>. This call will <b>enrol</b> them from
        ${ENROL_CLIPS} recorded clips.</p></div>`;
@@ -226,8 +226,7 @@ $("btn-continue").onclick = () => {
   show("panel-lookup", false); show("panel-record", true); setStep(state.mode === "enrol" ? 2 : 3);
   if(state.mode === "enrol"){
     $("rec-title").textContent = `Enrolment — ${cid} (clip ${state.clipsDone+1} of ${ENROL_CLIPS})`;
-    $("rec-why").textContent = `No complete voiceprint exists for "${cid}", so this call enrols one. `
-      + `Each clip is averaged into a single voiceprint.`;
+    $("rec-why").textContent = `No voiceprint exists for "${cid}". Record ${ENROL_CLIPS} clips for enrollment.`;
   }else{
     $("rec-title").textContent = `Authentication — caller claims to be ${cid}`;
     $("rec-why").textContent = "A voiceprint exists. One clip will be scored against it (1:1) "
@@ -237,8 +236,16 @@ $("btn-continue").onclick = () => {
 };
 
 $("btn-reset").onclick = async () => {
-  for(const s of state.enrolled){ try{ await fetch("/biometrics/speakers/"+encodeURIComponent(s), {method:"DELETE"}); }catch(e){} }
-  state.enrolled = []; await loadSpeakers();
+  state.cid = null;
+  state.mode = null;
+  state.clipsDone = 0;
+  state.pendingEnrollment = [];
+  state.audioClips = [];
+  $("cid").value = "";
+  clearFail();
+  renderAudioClips();
+  renderProfileSummary();
+  await loadSpeakers();
 };
 $("btn-again").onclick = () => {
   show("panel-result", false); show("panel-call", true); setStep(1);
@@ -298,7 +305,14 @@ async function submit(){
   $("rec-hint").textContent = "Scoring…";
   try{
     if(state.mode === "enrol") await doEnrol(blob); else await doVerify(blob);
-  }catch(e){ fail("Request failed: " + e.message); }
+  }catch(e){
+    fail("Request failed: " + e.message);
+    if(e.status === 409 && state.mode === "enrol"){
+      show("panel-record", false); show("panel-call", true); setStep(1);
+      await loadSpeakers();
+      fail(`${e.message}. This ID was registered in another session. Use your own unique ID, or verify the existing speaker.`);
+    }
+  }
   $("btn-rec").disabled = false;
 }
 
@@ -311,13 +325,17 @@ function form(blob, extra={}, filename="recording.webm"){
 async function post(path, fd){
   const r = await fetch(path, {method:"POST", body:fd});
   const d = await r.json();
-  if(!r.ok) throw new Error(d.detail || JSON.stringify(d));
+  if(!r.ok){
+    const error = new Error(d.detail || JSON.stringify(d));
+    error.status = r.status;
+    throw error;
+  }
   return d;
 }
 
 function addAudioClip(blob, label, biometricSummary){
   state.audioClips.push({
-    id: state.nextClipId++, blob, label, biometricSummary,
+    id: state.nextClipId++, blob, label, biometricSummary, speakerId: state.cid,
     selected: false, profileStatus: "", profileResult: null,
   });
   renderAudioClips();
@@ -325,6 +343,7 @@ function addAudioClip(blob, label, biometricSummary){
 
 function renderAudioClips(){
   const list = $("audio-list");
+  const profiles = getSpeakerProfiles();
   list.replaceChildren();
   for(const clip of state.audioClips){
     const label = document.createElement("label");
@@ -344,20 +363,77 @@ function renderAudioClips(){
     label.append(checkbox, text);
     list.append(label);
 
+    const profile = profiles.get(clip.speakerId);
     if(clip.profileStatus){
       const result = document.createElement("div");
       result.className = "profile-result";
-      if(clip.profileResult){
-        const p = clip.profileResult;
-        result.textContent = `${clip.profileStatus}: age ${p.estimated_age} (${p.age_bucket}), ${p.gender} (${Math.round(p.gender_confidence * 100)}% confidence)`;
-      }else{
-        result.textContent = clip.profileStatus;
-      }
+      result.textContent = clip.profileStatus;
       list.append(result);
+    }
+    if(profile){
+      const speakerResult = document.createElement("div");
+      speakerResult.className = "profile-result";
+      speakerResult.textContent = `Speaker age: ${profile.age.toFixed(1)} (${ageBucket(profile.age)}), based on ${profile.results.length} profiled clip${profile.results.length === 1 ? "" : "s"}.`;
+      list.append(speakerResult);
     }
   }
   $("profile-all").checked = state.audioClips.length > 0 && state.audioClips.every(clip => clip.selected);
   updateProfileControls();
+}
+
+function median(values){
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2
+    ? ordered[middle]
+    : (ordered[middle - 1] + ordered[middle]) / 2;
+}
+
+function ageBucket(age){
+  if(age < 20) return "Under 20";
+  if(age < 30) return "20-30";
+  if(age < 40) return "30-40";
+  if(age < 50) return "40-50";
+  if(age < 60) return "50-60";
+  if(age < 70) return "60-70";
+  if(age < 80) return "70-80";
+  if(age < 90) return "80-90";
+  if(age < 100) return "90-100";
+  return "100+";
+}
+
+function getSpeakerProfiles(){
+  const groups = new Map();
+  for(const clip of state.audioClips){
+    if(!clip.profileResult) continue;
+    if(!groups.has(clip.speakerId)) groups.set(clip.speakerId, []);
+    groups.get(clip.speakerId).push(clip.profileResult);
+  }
+
+  const profiles = new Map();
+  for(const [speakerId, results] of groups){
+    const age = median(results.map(result => result.estimated_age));
+    const female = results.reduce((total, result) => total + result.gender_probabilities.female, 0) / results.length;
+    const male = results.reduce((total, result) => total + result.gender_probabilities.male, 0) / results.length;
+    profiles.set(speakerId, {
+      age,
+      results,
+      gender: female > male ? "Female" : "Male",
+      genderConfidence: Math.max(female, male),
+    });
+  }
+  return profiles;
+}
+
+function renderProfileSummary(){
+  const summary = $("profile-summary");
+  summary.replaceChildren();
+  for(const [speakerId, profile] of getSpeakerProfiles()){
+    const row = document.createElement("p");
+    row.className = "verdict ok";
+    row.textContent = `${speakerId}: estimated age ${profile.age.toFixed(1)} (${ageBucket(profile.age)}), ${profile.gender} (${Math.round(profile.genderConfidence * 100)}% confidence), based on ${profile.results.length} clip${profile.results.length === 1 ? "" : "s"}.`;
+    summary.append(row);
+  }
 }
 
 function updateProfileControls(){
@@ -373,6 +449,7 @@ $("profile-all").onchange = () => {
 $("btn-profile").onclick = async () => {
   const selected = state.audioClips.filter(clip => clip.selected);
   state.profilingBusy = true;
+  $("btn-again").disabled = true;
   $("btn-profile").disabled = true;
   for(const clip of selected){
     clip.profileStatus = "Profiling…";
@@ -387,23 +464,33 @@ $("btn-profile").onclick = async () => {
     renderAudioClips();
   }
   state.profilingBusy = false;
+  $("btn-again").disabled = false;
+  renderProfileSummary();
   updateProfileControls();
 };
 
 async function doEnrol(blob){
-  const clipNumber = state.clipsDone + 1;
-  const d = await post(`/biometrics/speakers/${encodeURIComponent(state.cid)}/enroll-one`, form(blob));
-  addAudioClip(blob, `Enrollment clip ${clipNumber}`, `Enrollment audio for ${state.cid}`);
-  state.clipsDone++;
-  if(state.clipsDone < ENROL_CLIPS){
+  const clipNumber = state.pendingEnrollment.length + 1;
+  if(clipNumber < ENROL_CLIPS){
+    state.pendingEnrollment.push(blob);
+    state.clipsDone = state.pendingEnrollment.length;
+    addAudioClip(blob, `Enrollment clip ${clipNumber}`, `Enrollment audio for ${state.cid}`);
     $("rec-title").textContent = `Enrolment — ${state.cid} (clip ${state.clipsDone+1} of ${ENROL_CLIPS})`;
-    $("rec-why").textContent = `Clip ${state.clipsDone} accepted (${d.utterances[0].seconds}s). `
-      + `Record ${ENROL_CLIPS-state.clipsDone} more — say something different each time.`;
+    $("rec-why").textContent = `Clip ${state.clipsDone} recorded. `
+      + `Record ${ENROL_CLIPS-state.clipsDone} more clips.`;
     $("phrase").textContent = phrase();
     $("timer").textContent = "0.0 s";
     $("rec-hint").textContent = `Need at least ${MIN_SEC.toFixed(1)} s of speech`;
     return;
   }
+  const enrollment = new FormData();
+  [...state.pendingEnrollment, blob].forEach((clip, index) => {
+    enrollment.append("files", clip, `enrollment-${index+1}.webm`);
+  });
+  const d = await post(`/biometrics/speakers/${encodeURIComponent(state.cid)}/enroll`, enrollment);
+  addAudioClip(blob, `Enrollment clip ${clipNumber}`, `Enrollment audio for ${state.cid}`);
+  state.clipsDone = d.n_utterances;
+  state.pendingEnrollment = [];
     state.mode = "verify";
     $("rec-title").textContent = `Biometric test — ${state.cid}`;
     $("rec-why").textContent = `Enrollment is complete (${d.n_utterances} clips). Record a new clip, separate from enrollment, to test 1:1 verification and 1:N identification.`;
@@ -425,7 +512,7 @@ async function doVerify(blob){
       <h3>${accepted ? "Authenticated" : "Not authenticated"}</h3>
       <p>${accepted
         ? `The voice matches the stored voiceprint for <b>${state.cid}</b>. A contact flow would route this call normally.`
-        : `The voice does not match <b>${state.cid}</b>. A contact flow would route to step-up authentication or an agent.`}</p>
+        : `The voice does not match <b>${state.cid}</b>. This ID already has a voiceprint; if this is a different person, use a different customer ID.`}</p>
     </div>`;
 
   const cand = i.candidates.map(c =>

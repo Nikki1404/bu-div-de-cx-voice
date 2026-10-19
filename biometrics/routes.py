@@ -8,7 +8,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from biometrics import config
 from biometrics.engine import AudioError, EngineError, VoiceEngine, cosine_distance, check_duration, decode_audio
-from biometrics.registry import RegistryError, SpeakerRegistry
+from biometrics.registry import DuplicateSpeakerError, RegistryError, SpeakerRegistry, normalize_speaker_id
 
 STATE = {}
 router = APIRouter(prefix="/biometrics", tags=["Voice Biometrics"])
@@ -72,12 +72,18 @@ def list_speakers():
     return {"speakers": STATE["registry"].list()}
 
 
-@router.post("/speakers/{speaker_id}/enroll", summary="Enrol or update a speaker")
+@router.post("/speakers/{speaker_id}/enroll", summary="Enroll a new speaker ID")
 def enroll(
     speaker_id: str,
     files: list[UploadFile] = File(..., description="Two or more clips, ideally recorded separately"),
-    replace: bool = Form(False, description="Discard any existing voiceprint instead of merging"),
 ):
+    try:
+        speaker_id = normalize_speaker_id(speaker_id)
+        if STATE["registry"].has(speaker_id):
+            raise HTTPException(409, f"speaker ID '{speaker_id}' already exists; choose a different ID")
+    except RegistryError as e:
+        raise HTTPException(400, str(e)) from e
+
     embeddings, details = [], []
     for f in files:
         emb, seconds, sr = _embed_upload(f)
@@ -85,9 +91,11 @@ def enroll(
         details.append({"filename": f.filename, "seconds": round(seconds, 2), "sample_rate": sr})
 
     try:
-        result = STATE["registry"].enroll(speaker_id, embeddings, replace=replace)
+        result = STATE["registry"].enroll(speaker_id, embeddings)
+    except DuplicateSpeakerError as e:
+        raise HTTPException(409, str(e)) from e
     except RegistryError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
     warning = None
     if result["n_utterances"] < config.MIN_ENROLL_UTTERANCES:
@@ -102,7 +110,6 @@ def enroll(
 def enroll_one(
     speaker_id: str,
     file: UploadFile = File(..., description="A single clip"),
-    replace: bool = Form(False, description="Discard any existing voiceprint first"),
 ):
     """Swagger UI cannot render a multi-file upload field (it shows "Add string
     item" instead of a file picker), so this single-file variant exists for the
@@ -110,9 +117,17 @@ def enroll_one(
     voiceprint, giving the same result as one /enroll call with all the files."""
     emb, seconds, sr = _embed_upload(file)
     try:
-        result = STATE["registry"].enroll(speaker_id, [emb], replace=replace)
+        result = STATE["registry"].enroll(
+            speaker_id,
+            [emb],
+            allow_incomplete_append=True,
+            match_threshold=config.THRESHOLD,
+            max_existing_utterances=config.MIN_ENROLL_UTTERANCES,
+        )
+    except DuplicateSpeakerError as e:
+        raise HTTPException(409, str(e)) from e
     except RegistryError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
     warning = None
     if result["n_utterances"] < config.MIN_ENROLL_UTTERANCES:
@@ -130,6 +145,11 @@ def verify(
     file: UploadFile = File(...),
     threshold: float = Form(None, description=f"Defaults to {config.THRESHOLD}"),
 ):
+    try:
+        speaker_id = normalize_speaker_id(speaker_id)
+    except RegistryError as e:
+        raise HTTPException(400, str(e)) from e
+
     emb, seconds, _ = _embed_upload(file)
     thr = config.THRESHOLD if threshold is None else float(threshold)
     result = STATE["registry"].verify(emb, speaker_id, thr)
@@ -175,6 +195,11 @@ def call(
         impostor_known verify rejects and the voice matches another enrolled id
         rejected       verify rejects and the voice matches nobody
     """
+    try:
+        caller_id = normalize_speaker_id(caller_id)
+    except RegistryError as e:
+        raise HTTPException(400, str(e)) from e
+
     emb, seconds, _ = _embed_upload(file)
     thr = config.THRESHOLD if threshold is None else float(threshold)
     reg = STATE["registry"]
@@ -191,9 +216,17 @@ def call(
                     "matches_existing": dup["speaker_id"], "distance": dup["distance"],
                     "seconds": round(seconds, 2), "routing": "agent_fraud_review"}
         try:
-            res = reg.enroll(caller_id, [emb])
+            res = reg.enroll(
+                caller_id,
+                [emb],
+                allow_incomplete_append=n_have > 0,
+                match_threshold=thr,
+                max_existing_utterances=config.MIN_ENROLL_UTTERANCES,
+            )
+        except DuplicateSpeakerError as e:
+            raise HTTPException(409, str(e)) from e
         except RegistryError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, str(e)) from e
         done = res["n_utterances"] >= config.MIN_ENROLL_UTTERANCES
         return {"mode": "enrolment",
                 "outcome": "enrolment_complete" if done else "enrolment_in_progress",

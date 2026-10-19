@@ -18,6 +18,17 @@ class RegistryError(RuntimeError):
     pass
 
 
+class DuplicateSpeakerError(RegistryError):
+    pass
+
+
+def normalize_speaker_id(speaker_id: str) -> str:
+    normalized = speaker_id.strip().casefold()
+    if not normalized:
+        raise RegistryError("speaker ID must not be empty")
+    return normalized
+
+
 class SpeakerRegistry:
     def __init__(self, path: str, model_id: str):
         self.path = path
@@ -39,6 +50,9 @@ class SpeakerRegistry:
                 f"engine is running '{self.model_id}'. Voiceprints are not portable "
                 f"between models - delete the file and re-enrol.")
         for sid, rec in blob.get("speakers", {}).items():
+            sid = normalize_speaker_id(sid)
+            if sid in self._speakers:
+                raise RegistryError(f"registry contains duplicate speaker ID '{sid}'")
             rec["embedding"] = np.array(rec["embedding"], dtype=np.float32)
             self._speakers[sid] = rec
 
@@ -56,20 +70,42 @@ class SpeakerRegistry:
         os.replace(tmp, self.path)     # atomic, so a crash cannot truncate it
 
     # ------------------------------------------------------------------ mutation
-    def enroll(self, speaker_id: str, embeddings, replace: bool = False):
+    def enroll(
+        self,
+        speaker_id: str,
+        embeddings,
+        *,
+        allow_incomplete_append: bool = False,
+        match_threshold: float | None = None,
+        max_existing_utterances: int | None = None,
+    ):
         """Average N utterance embeddings into one voiceprint, then RE-NORMALISE.
 
         Re-normalising matters: the mean of unit vectors is not a unit vector, so
-        skipping it quietly biases every later cosine score."""
+        skipping it quietly biases every later cosine score. Existing IDs are
+        rejected unless this is a verified continuation of incomplete enrollment."""
         if not embeddings:
             raise RegistryError("no usable utterances to enrol")
+        speaker_id = normalize_speaker_id(speaker_id)
         with self._lock:
             existing = self._speakers.get(speaker_id)
             vectors = list(embeddings)
             n_prev = 0
-            if existing is not None and not replace:
+            if existing is not None:
+                if not allow_incomplete_append:
+                    raise DuplicateSpeakerError(
+                        f"speaker ID '{speaker_id}' already exists; choose a different ID")
                 # weight the stored centroid by how many utterances produced it
                 n_prev = int(existing.get("n_utterances", 1))
+                if max_existing_utterances is not None and n_prev >= max_existing_utterances:
+                    raise DuplicateSpeakerError(
+                        f"speaker ID '{speaker_id}' is already fully enrolled; choose a different ID")
+                if match_threshold is None or any(
+                    cosine_distance(embedding, existing["embedding"]) > match_threshold
+                    for embedding in embeddings
+                ):
+                    raise DuplicateSpeakerError(
+                        f"speaker ID '{speaker_id}' exists for a different voice; choose a different ID")
                 vectors = [existing["embedding"] * n_prev] + vectors
 
             centroid = np.sum(np.stack(vectors), axis=0) / (n_prev + len(embeddings))
@@ -91,6 +127,7 @@ class SpeakerRegistry:
 
     def delete(self, speaker_id: str) -> bool:
         """Deleting biometric data on request is a legal obligation, not a nicety."""
+        speaker_id = normalize_speaker_id(speaker_id)
         with self._lock:
             if speaker_id not in self._speakers:
                 return False
@@ -108,11 +145,13 @@ class SpeakerRegistry:
                     for s, r in sorted(self._speakers.items())]
 
     def has(self, speaker_id: str) -> bool:
+        speaker_id = normalize_speaker_id(speaker_id)
         with self._lock:
             return speaker_id in self._speakers
 
     def verify(self, embedding, speaker_id: str, threshold: float):
         """1:1 - is this the customer the IVR thinks is calling?"""
+        speaker_id = normalize_speaker_id(speaker_id)
         with self._lock:
             rec = self._speakers.get(speaker_id)
         if rec is None:
