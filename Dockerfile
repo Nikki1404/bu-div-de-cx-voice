@@ -3,9 +3,6 @@ FROM nvidia/cuda:13.0.1-cudnn-runtime-ubuntu24.04
 ARG http_proxy
 ARG https_proxy
 
-ENV http_proxy=${http_proxy}
-ENV https_proxy=${https_proxy}
-
 ARG VD_REPO=https://github.com/localai-org/voice-detect.cpp.git
 ARG VD_REF=1db1759572c90faef6f3a78c36b5941a096a9f89
 ARG VD_MODEL_URL=https://huggingface.co/mudler/voice-detect-gguf/resolve/main/ecapa-tdnn-voxceleb.gguf
