@@ -35,8 +35,8 @@ Open `http://localhost:8001/demo` and enter a speaker/customer ID.
 1. For a new speaker, record three enrollment clips. The UI keeps them in the current browser page and submits all three together after the last recording. A failed request does not create a partial voiceprint.
 2. After enrollment, record a separate biometric-test clip. For an existing speaker, proceed directly to this test.
 3. Review the 1:1 verification and 1:N identification results.
-4. Select a verification recording, then click **Profile selected**. Enrollment recordings are included automatically for that speaker and are not shown as selectable items. The UI profiles the enrollment clips still available in this page plus the selected verification recording, and takes the median of their estimated ages. Cached clip predictions are reused when testing again.
-5. The recording picker shows the aggregate age bucket, gender, and profiling status. **Profile results** shows the final estimated age and gender. Gender is determined by averaging the female/male probabilities across the same clips used for age estimation. Use the step buttons to return to the picker, run another biometric test, or enter a new speaker ID for enrollment. Navigation is disabled while recording or processing audio.
+4. Select a verification recording, then click **Profile selected**. Only that recording is sent to `/age-gender/predict`; enrollment clips are never included or shown as selectable items. Cached predictions for that recording are reused when profiling it again.
+5. The recording picker shows the selected recording's age bucket, gender, and profiling status. **Profile results** shows its estimated age and gender. Use the step buttons to return to the picker, run another biometric test, or enter a new speaker ID for enrollment. Navigation is disabled while recording or processing audio.
 
 For API testing from PowerShell, replace the example file paths with recordings at least 3 seconds long. Use distinct enrollment recordings and a held-out test recording:
 
@@ -65,7 +65,7 @@ The last request uses the same held-out recording for age/gender profiling after
 
 The speaker registry stores voice embeddings, not recordings. Session audio is not persisted by the server and disappears when the browser page is closed or refreshed. The `/data` volume stores the registry across container restarts.
 
-For existing speakers whose enrollment audio is no longer in the page, profiling uses the selected verification recording alone. Other speakers' recordings and previous verification tests are not included in that recording's age estimate.
+Profiling always uses the selected verification recording alone, whether or not enrollment audio is still available in the page. Other speakers' recordings and previous verification tests are not included.
 
 ### Concurrent demo users
 

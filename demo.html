@@ -434,14 +434,6 @@ function renderAudioClips(){
   updateProfileControls();
 }
 
-function median(values){
-  const ordered = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(ordered.length / 2);
-  return ordered.length % 2
-    ? ordered[middle]
-    : (ordered[middle - 1] + ordered[middle]) / 2;
-}
-
 function ageBucket(age){
   if(age < 20) return "Under 20";
   if(age < 30) return "20-30";
@@ -487,28 +479,23 @@ $("btn-profile").onclick = async () => {
   if(state.profilingBusy || state.audioBusy) return;
   const selected = state.audioClips.find(clip => clip.kind === "verification" && clip.speakerId === state.cid && clip.selected);
   if(!selected) return;
-  const inputs = state.audioClips.filter(clip => clip.speakerId === selected.speakerId
-    && ((clip.kind === "enrollment" && clip.enrolled) || clip.id === selected.id));
   state.profilingBusy = true;
   selected.profileStatus = "Profiling…";
   selected.profileSummary = null;
   renderAudioClips();
   try{
-    for(const clip of inputs){
-      if(!clip.profileResult){
-        const result = await post("/age-gender/predict", form(clip.blob, {}, `recording-${clip.id}.webm`));
-        if(!Number.isFinite(result.estimated_age)) throw new Error("No estimated age returned");
-        if(!Number.isFinite(result.gender_probabilities?.female)
-          || !Number.isFinite(result.gender_probabilities?.male)) throw new Error("No gender probabilities returned");
-        clip.profileResult = result;
-      }
+    if(!selected.profileResult){
+      const result = await post("/age-gender/predict", form(selected.blob, {}, `recording-${selected.id}.webm`));
+      if(!Number.isFinite(result.estimated_age)) throw new Error("No estimated age returned");
+      if(!Number.isFinite(result.gender_probabilities?.female)
+        || !Number.isFinite(result.gender_probabilities?.male)) throw new Error("No gender probabilities returned");
+      selected.profileResult = result;
     }
-    const female = inputs.reduce((total, clip) => total + clip.profileResult.gender_probabilities.female, 0) / inputs.length;
-    const male = inputs.reduce((total, clip) => total + clip.profileResult.gender_probabilities.male, 0) / inputs.length;
+    const {female, male} = selected.profileResult.gender_probabilities;
     selected.profileSummary = {
-      age: median(inputs.map(clip => clip.profileResult.estimated_age)),
+      age: selected.profileResult.estimated_age,
       gender: female > male ? "Female" : "Male",
-      clipIds: inputs.map(clip => clip.id),
+      clipIds: [selected.id],
     };
     selected.profileStatus = "Profiled";
   }catch(error){
