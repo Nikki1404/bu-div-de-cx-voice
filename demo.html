@@ -424,12 +424,6 @@ function renderAudioClips(){
       result.textContent = clip.profileStatus;
       list.append(result);
     }
-    if(clip.profileSummary){
-      const speakerResult = document.createElement("div");
-      speakerResult.className = "profile-result";
-      speakerResult.textContent = `Age bucket: ${ageBucket(clip.profileSummary.age)}; Gender: ${clip.profileSummary.gender}`;
-      list.append(speakerResult);
-    }
   }
   updateProfileControls();
 }
@@ -450,10 +444,17 @@ function ageBucket(age){
 function renderProfileSummary(){
   const summary = $("profile-summary");
   summary.replaceChildren();
+  const speakerAges = new Map();
   for(const clip of state.audioClips.filter(clip => clip.speakerId === state.cid && clip.selected && clip.profileSummary)){
+    const ages = speakerAges.get(clip.speakerId) || [];
+    ages.push(clip.profileSummary.age);
+    speakerAges.set(clip.speakerId, ages);
+  }
+  for(const [speakerId, ages] of speakerAges){
+    const averageAge = ages.reduce((total, age) => total + age, 0) / ages.length;
     const row = document.createElement("p");
     row.className = "verdict ok";
-    row.textContent = `${clip.speakerId}: estimated age ${clip.profileSummary.age.toFixed(1)}; Gender: ${clip.profileSummary.gender}`;
+    row.textContent = `${speakerId}: Age bucket ${ageBucket(averageAge)}`;
     summary.append(row);
   }
 }
@@ -490,13 +491,7 @@ $("btn-profile").onclick = async () => {
       try{
         const result = await post("/age-gender/predict", form(clip.blob, {}, `recording-${clip.id}.webm`));
         if(!Number.isFinite(result.estimated_age)) throw new Error("No estimated age returned");
-        if(!Number.isFinite(result.gender_probabilities?.female)
-          || !Number.isFinite(result.gender_probabilities?.male)) throw new Error("No gender probabilities returned");
-        const {female, male} = result.gender_probabilities;
-        clip.profileSummary = {
-          age: result.estimated_age,
-          gender: female > male ? "Female" : "Male",
-        };
+        clip.profileSummary = {age: result.estimated_age};
         clip.profileStatus = "Profiled";
       }catch(error){
         clip.profileStatus = `Profiling failed: ${error.message}`;

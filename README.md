@@ -42,7 +42,7 @@ Open `http://localhost:8001/app/demo` and enter a speaker/customer ID.
 2. After enrollment, record a separate biometric-test clip. For an existing speaker, proceed directly to this test.
 3. Review the 1:1 verification and 1:N identification results.
 4. Select one or more enrollment or verification recordings, then click **Profile selected**. Each selected clip is sent individually to `/age-gender/predict`.
-5. The recording picker shows each selected recording's age bucket, gender, and profiling status. **Profile results** shows the estimated age and gender for each selected clip. Selecting the same clip and clicking **Profile selected** again runs a fresh prediction. Profile results are not persisted by the service.
+5. The recording picker shows profiling status for each selected recording. **Profile results** shows one age bucket per speaker, calculated from the average prediction across selected clips. Selecting the same clip and clicking **Profile selected** again runs a fresh prediction. Exact ages and profile results are not persisted by the service.
 
 For API testing from PowerShell, replace the example file paths with recordings at least 3 seconds long. Use distinct enrollment recordings and a held-out test recording:
 
