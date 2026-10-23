@@ -2,7 +2,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 
 from api.config import APP_BASE_PATH, APP_NAME, APP_VERSION
 from api.routes.age_gender import router as age_gender_router
@@ -34,7 +34,7 @@ app.include_router(biometrics_router, prefix=APP_BASE_PATH)
 
 @app.get(APP_BASE_PATH or "/", include_in_schema=False)
 async def root():
-    return RedirectResponse(f"{APP_BASE_PATH}/demo")
+    return await demo_page()
 
 
 @app.get(f"{APP_BASE_PATH}/demo", response_class=HTMLResponse, include_in_schema=False)

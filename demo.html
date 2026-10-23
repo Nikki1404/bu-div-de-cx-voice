@@ -165,7 +165,7 @@
 </div>
 
 <script>
-const API_BASE_PATH = window.location.pathname.replace(/\/demo\/?$/, "");
+const API_BASE_PATH = window.location.pathname.replace(/\/demo\/?$/, "").replace(/\/$/, "");
 const MIN_SEC = 3.0, MAX_SEC = 15.0, ENROL_CLIPS = 3;
 const WORDS = ("river tiger copper harbour lantern meadow cobalt thunder velvet "
              + "orchid granite silver compass maple ember willow falcon canyon "

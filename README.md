@@ -13,11 +13,11 @@ docker run --rm -p 8001:8001 -v voice-iq-data:/data -e DEVICE=cpu voice-iq
 
 Hugging Face model files are cached in the image, and runtime is configured for offline model loading. The run command uses normal bridge networking and publishes port `8001`. Omit `-e DEVICE=cpu` and add `--gpus all` when running on a GPU host.
 
-Open `http://localhost:8001/app/demo` for the guided UI or `http://localhost:8001/app/docs` for the API. Check `http://localhost:8001/app/health` for service health.
+Open `http://localhost:8001/apps/voice-biometric` for the guided UI or `http://localhost:8001/apps/voice-biometric/docs` for the API. Check `http://localhost:8001/apps/voice-biometric/health` for service health.
 
 ## Deploy behind an AWS Application Load Balancer
 
-The container serves the entire application beneath `/app` by default. Configure an HTTPS listener rule for `/app` and `/app/*` to forward to a target group using HTTP on port `8001`; the ALB forwards the path unchanged. Set the target group's health check path to `/app/health`. Allow inbound port `8001` on the EC2 security group only from the ALB security group, and expose HTTPS on the ALB. The resulting public URLs are `https://<your-domain>/app/demo`, `https://<your-domain>/app/docs`, and `https://<your-domain>/app/health`.
+The container serves the entire application beneath `/apps/voice-biometric` by default. Configure one HTTPS listener rule with the path pattern `/apps/voice-biometric*` to forward to a target group using HTTP on port `8001`; the ALB forwards the path unchanged. Set the target group's health check path to `/apps/voice-biometric/health`. Allow inbound port `8001` on the EC2 security group only from the ALB security group, and expose HTTPS on the ALB. The resulting public URLs are `https://<your-domain>/apps/voice-biometric`, `https://<your-domain>/apps/voice-biometric/docs`, and `https://<your-domain>/apps/voice-biometric/health`.
 
 To use a different URL prefix, set `APP_BASE_PATH` to that path on the container, such as `/voice-iq`, and use the same prefix in the listener rule and target health check.
 
@@ -36,7 +36,7 @@ CPU mode is used in the example above. The biometrics engine also runs on CPU; p
 
 ## Test the complete flow
 
-Open `http://localhost:8001/app/demo` and enter a speaker/customer ID.
+Open `http://localhost:8001/apps/voice-biometric` and enter a speaker/customer ID.
 
 1. For a new speaker, record three enrollment clips. The UI keeps them in the current browser page and submits all three together after the last recording. A failed request does not create a partial voiceprint.
 2. After enrollment, record a separate biometric-test clip. For an existing speaker, proceed directly to this test.
@@ -51,20 +51,20 @@ curl.exe -X POST `
 	-F "files=@C:\audio\enroll-1.wav" `
 	-F "files=@C:\audio\enroll-2.wav" `
 	-F "files=@C:\audio\enroll-3.wav" `
-		http://localhost:8001/app/biometrics/speakers/alex/enroll
+		http://localhost:8001/apps/voice-biometric/biometrics/speakers/alex/enroll
 
 curl.exe -X POST `
 	-F "speaker_id=alex" `
 	-F "file=@C:\audio\biometric-test.wav" `
-		http://localhost:8001/app/biometrics/verify
+		http://localhost:8001/apps/voice-biometric/biometrics/verify
 
 curl.exe -X POST `
 	-F "file=@C:\audio\biometric-test.wav" `
-		http://localhost:8001/app/biometrics/identify
+		http://localhost:8001/apps/voice-biometric/biometrics/identify
 
 curl.exe -X POST `
 	-F "file=@C:\audio\biometric-test.wav" `
-		http://localhost:8001/app/age-gender/predict
+		http://localhost:8001/apps/voice-biometric/age-gender/predict
 ```
 
 The last request uses the same held-out recording for age/gender profiling after the biometric test.
@@ -85,18 +85,18 @@ Biometric inference and profiling inference each serialize access to their share
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/app/biometrics/health` | Biometrics engine status |
-| GET | `/app/biometrics/speakers` | List enrolled speakers |
-| POST | `/app/biometrics/speakers/{speaker_id}/enroll` | Enroll several recordings |
-| POST | `/app/biometrics/speakers/{speaker_id}/enroll-one` | Enroll one recording |
-| DELETE | `/app/biometrics/speakers/{speaker_id}` | Delete a voiceprint |
-| POST | `/app/biometrics/verify` | 1:1 speaker verification |
-| POST | `/app/biometrics/identify` | 1:N speaker identification |
-| POST | `/app/biometrics/call` | Enrollment/authentication call flow |
-| POST | `/app/biometrics/compare` | Compare two recordings |
-| GET | `/app/age-gender/health` | Profiling model status |
-| POST | `/app/age-gender/predict` | Age and gender prediction |
-| WS | `/app/age-gender/ws` | Age and gender prediction over WebSocket |
+| GET | `/apps/voice-biometric/biometrics/health` | Biometrics engine status |
+| GET | `/apps/voice-biometric/biometrics/speakers` | List enrolled speakers |
+| POST | `/apps/voice-biometric/biometrics/speakers/{speaker_id}/enroll` | Enroll several recordings |
+| POST | `/apps/voice-biometric/biometrics/speakers/{speaker_id}/enroll-one` | Enroll one recording |
+| DELETE | `/apps/voice-biometric/biometrics/speakers/{speaker_id}` | Delete a voiceprint |
+| POST | `/apps/voice-biometric/biometrics/verify` | 1:1 speaker verification |
+| POST | `/apps/voice-biometric/biometrics/identify` | 1:N speaker identification |
+| POST | `/apps/voice-biometric/biometrics/call` | Enrollment/authentication call flow |
+| POST | `/apps/voice-biometric/biometrics/compare` | Compare two recordings |
+| GET | `/apps/voice-biometric/age-gender/health` | Profiling model status |
+| POST | `/apps/voice-biometric/age-gender/predict` | Age and gender prediction |
+| WS | `/apps/voice-biometric/age-gender/ws` | Age and gender prediction over WebSocket |
 
 Speaker IDs are trimmed and compared case-insensitively. `/biometrics/speakers/{speaker_id}/enroll` returns HTTP 409 if the ID already exists. `/enroll-one` only allows adding clips to an incomplete enrollment when the new clip matches that ID's existing voiceprint; completed IDs and mismatched voices return HTTP 409. Use a new ID for a different speaker.
 
