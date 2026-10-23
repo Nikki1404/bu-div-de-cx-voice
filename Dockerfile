@@ -116,8 +116,9 @@ USER voiceiq
 
 VOLUME ["/data"]
 ENV PORT=8001
+ENV APP_BASE_PATH=/app
 EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
-    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8001') + '/health', timeout=4)"
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8001') + os.environ.get('APP_BASE_PATH', '/app').rstrip('/') + '/health', timeout=4)"
 
 CMD ["sh", "-c", "exec python -m uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8001} --workers 1"]

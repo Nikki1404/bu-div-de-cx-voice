@@ -165,6 +165,7 @@
 </div>
 
 <script>
+const API_BASE_PATH = window.location.pathname.replace(/\/demo\/?$/, "");
 const MIN_SEC = 3.0, MAX_SEC = 15.0, ENROL_CLIPS = 3;
 const WORDS = ("river tiger copper harbour lantern meadow cobalt thunder velvet "
              + "orchid granite silver compass maple ember willow falcon canyon "
@@ -186,7 +187,7 @@ function phrase(){ const p=[]; while(p.length<4) {
 
 async function loadSpeakers(){
   try{
-    const r = await fetch("/biometrics/speakers"); const d = await r.json();
+    const r = await fetch(`${API_BASE_PATH}/biometrics/speakers`); const d = await r.json();
     state.enrolled = d.speakers.map(s=>s.speaker_id);
     state.counts = Object.fromEntries(d.speakers.map(s=>[s.speaker_id, s.n_utterances]));
     $("enrolled-list").textContent = state.enrolled.length
@@ -375,7 +376,7 @@ function form(blob, extra={}, filename="recording.webm"){
   return fd;
 }
 async function post(path, fd){
-  const r = await fetch(path, {method:"POST", body:fd});
+  const r = await fetch(`${API_BASE_PATH}${path}`, {method:"POST", body:fd});
   const d = await r.json();
   if(!r.ok){
     const error = new Error(d.detail || JSON.stringify(d));
@@ -388,7 +389,7 @@ async function post(path, fd){
 function addAudioClip(blob, label, biometricSummary, kind="enrollment"){
   state.audioClips.push({
     id: state.nextClipId++, blob, label, biometricSummary, speakerId: state.cid, kind,
-    enrolled: false, selected: kind === "verification", profileStatus: "", profileResult: null,
+    enrolled: false, selected: kind === "verification", profileStatus: "",
     profileSummary: null,
   });
   renderAudioClips();
@@ -397,16 +398,15 @@ function addAudioClip(blob, label, biometricSummary, kind="enrollment"){
 function renderAudioClips(){
   const list = $("audio-list");
   list.replaceChildren();
-  for(const clip of state.audioClips.filter(clip => clip.kind === "verification" && clip.speakerId === state.cid)){
+  for(const clip of state.audioClips.filter(clip => clip.speakerId === state.cid)){
     const label = document.createElement("label");
     label.className = "audio-choice";
     const checkbox = document.createElement("input");
-    checkbox.type = "radio";
-    checkbox.name = "verification-recording";
+    checkbox.type = "checkbox";
     checkbox.checked = clip.selected;
     checkbox.disabled = state.profilingBusy || state.audioBusy;
     checkbox.onchange = () => {
-      for(const recording of state.audioClips) recording.selected = recording.id === clip.id;
+      clip.selected = checkbox.checked;
       renderProfileSummary();
       updateProfileControls();
     };
@@ -460,7 +460,7 @@ function renderProfileSummary(){
 
 function updateProfileControls(){
   const busy = state.profilingBusy || state.audioBusy;
-  const recordings = state.audioClips.filter(clip => clip.kind === "verification" && clip.speakerId === state.cid);
+  const recordings = state.audioClips.filter(clip => clip.speakerId === state.cid);
   $("audio-list").querySelectorAll("input").forEach(input => { input.disabled = busy; });
   $("btn-call").disabled = busy;
   $("btn-reset").disabled = busy;
@@ -477,34 +477,36 @@ function updateProfileControls(){
 
 $("btn-profile").onclick = async () => {
   if(state.profilingBusy || state.audioBusy) return;
-  const selected = state.audioClips.find(clip => clip.kind === "verification" && clip.speakerId === state.cid && clip.selected);
-  if(!selected) return;
+  const selectedClips = state.audioClips.filter(clip => clip.speakerId === state.cid && clip.selected);
+  if(!selectedClips.length) return;
   state.profilingBusy = true;
-  selected.profileStatus = "Profiling…";
-  selected.profileSummary = null;
+  for(const clip of selectedClips){
+    clip.profileStatus = "Profiling…";
+    clip.profileSummary = null;
+  }
   renderAudioClips();
   try{
-    if(!selected.profileResult){
-      const result = await post("/age-gender/predict", form(selected.blob, {}, `recording-${selected.id}.webm`));
-      if(!Number.isFinite(result.estimated_age)) throw new Error("No estimated age returned");
-      if(!Number.isFinite(result.gender_probabilities?.female)
-        || !Number.isFinite(result.gender_probabilities?.male)) throw new Error("No gender probabilities returned");
-      selected.profileResult = result;
+    for(const clip of selectedClips){
+      try{
+        const result = await post("/age-gender/predict", form(clip.blob, {}, `recording-${clip.id}.webm`));
+        if(!Number.isFinite(result.estimated_age)) throw new Error("No estimated age returned");
+        if(!Number.isFinite(result.gender_probabilities?.female)
+          || !Number.isFinite(result.gender_probabilities?.male)) throw new Error("No gender probabilities returned");
+        const {female, male} = result.gender_probabilities;
+        clip.profileSummary = {
+          age: result.estimated_age,
+          gender: female > male ? "Female" : "Male",
+        };
+        clip.profileStatus = "Profiled";
+      }catch(error){
+        clip.profileStatus = `Profiling failed: ${error.message}`;
+      }
     }
-    const {female, male} = selected.profileResult.gender_probabilities;
-    selected.profileSummary = {
-      age: selected.profileResult.estimated_age,
-      gender: female > male ? "Female" : "Male",
-      clipIds: [selected.id],
-    };
-    selected.profileStatus = "Profiled";
-  }catch(error){
-    selected.profileStatus = `Profiling failed: ${error.message}`;
   }finally{
     state.profilingBusy = false;
     renderAudioClips();
     renderProfileSummary();
-    if(selected.profileSummary) navigateStep(5);
+    if(selectedClips.some(clip => clip.profileSummary)) navigateStep(5);
   }
 };
 
